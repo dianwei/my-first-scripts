@@ -1,13 +1,25 @@
 #include <iostream> 
 #include <string>   // 用于 std::stod 和 std::string
 #include <stdexcept> // 用于捕获 std::stod 可能抛出的异常 (std::invalid_argument, std::out_of_range)
+#include <vector>
 
+std::string bigbigmul (const std::string &num1, const std::string &num2);
 int main(int argc, char* argv[]) {
     // 检查命令行参数数量
-    if (argc != 3) {
+    if (argc < 3 || argc > 4) {
         // 如果参数数量不对，向标准错误流输出用法提示，并返回非零值表示错误。
-        std::cerr << "用法: " << argv[0] << " <数字1> <数字2>" << std::endl;
+        std::cerr << "用法: " << argv[0] << " （参数）<数字1> <数字2>" << std::endl;
+        for(int i=0;i<argc;i++){
+            std::cout << argv[i] << std::endl;
+        }
         return 1; 
+    }
+    else if(std::string(argv[1]) == "-b"){
+        // 如果第一个参数是 "-b"，实现高精度乘法，否则执行普通乘法
+        std::string num1=argv[2];
+        std::string num2=argv[3];
+        std::cout << argv[2] << " * " << argv[3] << " = " << bigbigmul(num1,num2) << std::endl;
+        return 0;
     }
 
     try {
@@ -32,6 +44,35 @@ int main(int argc, char* argv[]) {
         std::cerr << "输入的数字超出范围！" << std::endl;
         return 1;
     }
-    
+
     return 0;
+}
+
+std::string bigbigmul (const std::string &num1, const std::string &num2) {
+    if(num1 == "0" || num2 == "0") return "0";
+    // 处理乘法的逻辑
+    int len1 = num1.size();
+    int len2 = num2.size();
+    std::vector<int> result(len1 + len2, 0);
+    // 进行乘法计算
+    for(int i=len1-1 ; i>=0 ; i--){
+        for(int j=len2-1 ; j>=0 ; j--){
+            int mul = (num1[i]-'0') * (num2[j]-'0');
+            result[i+j+1] += mul;
+        }
+    }
+    // 处理进位
+    for(int i=len1+len2-1 ; i>0 ; i--){
+        if(result[i] >= 10){
+            result[i-1] += result[i] / 10;
+            result[i] %= 10;
+        }
+    }
+    // 构建结果字符串
+    std::string res;
+    int start = (result[0] == 0) ? 1 : 0; // 跳过前导零
+    for(int i=start ; i<len1+len2 ; i++){
+        res += (result[i] + '0');
+    }
+    return res; // 返回结果字符串
 }
