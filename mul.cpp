@@ -3,7 +3,20 @@
 #include <stdexcept> // 用于捕获 std::stod 可能抛出的异常 (std::invalid_argument, std::out_of_range)
 #include <vector>
 
+
+// 高精度浮点数乘法
+typedef struct{
+    std::string integerPart;  // 整数部分
+    std::string fractionalPart; // 小数部分
+    int exponent; // 科学计数法指数
+    bool negative; // 是否为负数
+}HighPrecisionFloat;
+
 std::string bigbigmul (const std::string &num1, const std::string &num2);
+HighPrecisionFloat parseString(const std::string& str);
+void HighPrecisionMultiply(const HighPrecisionFloat& num1, const HighPrecisionFloat& num2);
+
+
 int main(int argc, char* argv[]) {
     // 检查命令行参数数量
     if (argc < 3 || argc > 4) {
@@ -16,9 +29,13 @@ int main(int argc, char* argv[]) {
     }
     else if(std::string(argv[1]) == "-b"){
         // 如果第一个参数是 "-b"，实现高精度乘法，否则执行普通乘法
+
         std::string num1=argv[2];
         std::string num2=argv[3];
-        std::cout << argv[2] << " * " << argv[3] << " = " << bigbigmul(num1,num2) << std::endl;
+        HighPrecisionFloat hpf1 = parseString(num1);
+        HighPrecisionFloat hpf2 = parseString(num2);
+        HighPrecisionMultiply(hpf1, hpf2);
+        // std::cout << argv[2] << " * " << argv[3] << " = " << bigbigmul(num1,num2) << std::endl;
         return 0;
     }
 
@@ -54,7 +71,7 @@ std::string bigbigmul (const std::string &num1, const std::string &num2) {
     int len1 = num1.size();
     int len2 = num2.size();
     std::vector<int> result(len1 + len2, 0);
-    // 进行乘法计算
+    // 按位进行乘法计算
     for(int i=len1-1 ; i>=0 ; i--){
         for(int j=len2-1 ; j>=0 ; j--){
             int mul = (num1[i]-'0') * (num2[j]-'0');
@@ -70,9 +87,76 @@ std::string bigbigmul (const std::string &num1, const std::string &num2) {
     }
     // 构建结果字符串
     std::string res;
-    int start = (result[0] == 0) ? 1 : 0; // 跳过前导零
-    for(int i=start ; i<len1+len2 ; i++){
+    for(int i=0 ; i<len1+len2 ; i++){
         res += (result[i] + '0');
     }
     return res; // 返回结果字符串
+}
+
+HighPrecisionFloat parseString(const std::string& str){
+    HighPrecisionFloat hpf;
+    size_t pos = 0;
+
+    // 处理符号
+    if (!str.empty() && str[pos] == '-') {
+        hpf.negative = true;
+        pos++;
+    } else if(!str.empty() && str[pos] == '+') {
+        hpf.negative = false;
+        pos++;
+    }
+
+    // 处理整数部分和小数部分
+    size_t decimalPos = str.find('.', pos);
+    size_t expPos = str.find_first_of("eE", pos);
+
+    if (decimalPos != std::string::npos) {
+        hpf.integerPart = str.substr(pos, decimalPos - pos);
+        if (expPos != std::string::npos) {
+            hpf.fractionalPart = str.substr(decimalPos + 1, expPos - decimalPos - 1);
+            hpf.exponent = std::stoi(str.substr(expPos + 1));
+        } else {
+            hpf.fractionalPart = str.substr(decimalPos + 1);
+            hpf.exponent = 0;
+        }
+    } else {
+        if (expPos != std::string::npos) {
+            hpf.integerPart = str.substr(pos, expPos - pos);
+            hpf.fractionalPart = "";
+            hpf.exponent = std::stoi(str.substr(expPos + 1));
+        } else {
+            hpf.integerPart = str.substr(pos);
+            hpf.fractionalPart = "";
+            hpf.exponent = 0;
+        }
+    }
+
+    // 输出解析结果（调试用）
+    std::cout << "Integer Part: " << hpf.integerPart << std::endl;
+    std::cout << "Fractional Part: " << hpf.fractionalPart << std::endl;
+    std::cout << "Exponent: " << hpf.exponent << std::endl;
+    std::cout << "Negative: " << (hpf.negative ? "Yes" : "No") << std::endl;
+    
+    return hpf;
+} 
+
+void HighPrecisionMultiply(const HighPrecisionFloat& num1, const HighPrecisionFloat& num2) {
+    // 实现高精度浮点数乘法的逻辑
+    // 这部分代码需要处理整数部分、小数部分和指数的乘法
+    // 以及结果的规范化和格式化输出
+    std::string num1_full = num1.integerPart + num1.fractionalPart;
+    std::string num2_full = num2.integerPart + num2.fractionalPart;
+    std::string result = bigbigmul(num1_full, num2_full);
+    size_t decimal_places = num1.integerPart.size() + num2.integerPart.size();
+    std::cout << "Decimal places to insert: " << decimal_places << std::endl; // 调试输出
+    std::cout << "Raw multiplication result: " << result << std::endl;// 调试输出
+    // 插入小数点
+    if(result.size() > decimal_places) {
+        result.insert(decimal_places, ".");
+    } 
+    int result_exponent = num1.exponent + num2.exponent ;
+    // 处理结果的符号
+    bool result_negative = num1.negative ^ num2.negative;
+    // 这里可以添加更多的代码来格式化和输出结果
+    std::cout << "Result: " << (result_negative ? "-" : "") << result << "e" << result_exponent << std::endl;
 }
