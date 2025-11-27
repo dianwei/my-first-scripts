@@ -7,82 +7,56 @@
 #include <stack>
 #include <vector>
 #include <regex>
-
+#include <iomanip>
 
 class Complex {
-    private:
-        bool isVal = false;
-        double real;
-        double imag;
     public:
-        Complex(double r = 0.0, double i = 0.0, bool val = false) : real(r), imag(i), isVal(val) {}
+        Complex(double r = 0.0, double i = 0.0, bool placeholder = false)
+            : real(r), imag(i), isVal(placeholder) {}
 
-        bool isVariablePlaceholder() const {
-            return isVal;
-        }
-
-        // Overload the addition operator
         Complex operator+(const Complex& other) const {
             return Complex(real + other.real, imag + other.imag);
         }
-
-        // Overload the subtraction operator
         Complex operator-(const Complex& other) const {
             return Complex(real - other.real, imag - other.imag);
         }
-
-        // Overload the multiplication operator
         Complex operator*(const Complex& other) const {
             return Complex(real * other.real - imag * other.imag,
                            real * other.imag + imag * other.real);
         }
-
-        // Overload the division operator
         Complex operator/(const Complex& other) const {
             double denom = other.real * other.real + other.imag * other.imag;
             return Complex((real * other.real + imag * other.imag) / denom,
                            (imag * other.real - real * other.imag) / denom);
         }
 
-        // Overload the assignment operator
-        Complex& operator=(const Complex& other) {
-            real = other.real;
-            imag = other.imag;
-            return *this;
-        }
+        Complex conjugate() const { return Complex(real, -imag); }
+        double magnitude() const { return std::sqrt(real * real + imag * imag); }
 
-        // Method to compute the complex conjugate
-        Complex conjugate() const {
-            return Complex(real, -imag);
-        }
+        bool isVariablePlaceholder() const { return isVal; }
 
-        // Method to compute the magnitude of the complex number
-        double magnitude() const {
-            return sqrt(real * real + imag * imag);
-        }
-
-        // Overload the stream insertion operator for easy output
         friend std::ostream& operator<<(std::ostream& os, const Complex& c) {
-            if(c.real == 0 && c.imag == 0) {
-                os << "0";
-            } else if(c.imag == 0) {
+            if (c.imag == 0) {
                 os << c.real;
-            } else if(c.real == 0) {
+            } else if (c.real == 0) {
                 if(c.imag == 1) os << "i";
                 else if(c.imag == -1) os << "-i";
-                else os << c.imag << "i";
+                else
+                os << c.imag << "i";
             } else {
-                os << c.real;
-                if(c.imag > 0) {
-                    if(c.imag == 1) os << " + i";
-                    else os << " + " << c.imag << "i";
-                } else {
-                    if(c.imag == -1) os << " - i";
-                    else os << " - " << -c.imag << "i";
-                }
+                os << c.real << (c.imag > 0 ? " + " : " - ");
+                if(c.imag == 1 || c.imag == -1) 
+                    os << "i";
+                else
+                    os << std::abs(c.imag) << "i";
             }
             return os;
         }
+
+    private:
+        double real;
+        double imag;
+        bool isVal = false;
 };
 
 enum class Op {
@@ -350,6 +324,7 @@ bool Calculator(const std::vector<std::string>& tokens, std::unordered_map<std::
     }
     return true;
 }
+
 int main(){
     std::unordered_map<std::string, Complex> variables;
     std::string line;
