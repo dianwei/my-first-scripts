@@ -8,57 +8,94 @@
 #include <cmath>
 #include <regex>
 #include <iomanip>
+#include <boost/multiprecision/cpp_dec_float.hpp>
 
-// ================= Complex =================
+using Big = boost::multiprecision::cpp_dec_float_100;
+
+// 输出配置
+struct FormatConfig {
+    bool sci = false;      // 是否使用科学计数法
+    int precision = 30;    // 精度：科学计数法为小数点后位数；fixed 为小数点后位数
+} gFmt;
+
+// ============ Complex ============
 class Complex {
 public:
     Complex(long double r = 0.0L, long double i = 0.0L, bool placeholder = false)
+        : real(Big(r)), imag(Big(i)), isVal(placeholder) {}
+    Complex(const Big& r, const Big& i, bool placeholder = false)
         : real(r), imag(i), isVal(placeholder) {}
 
     Complex operator+(const Complex& o) const { return Complex(real + o.real, imag + o.imag); }
     Complex operator-(const Complex& o) const { return Complex(real - o.real, imag - o.imag); }
     Complex operator*(const Complex& o) const { return Complex(real*o.real - imag*o.imag, real*o.imag + imag*o.real); }
     Complex operator/(const Complex& o) const {
-        long double denom = o.real*o.real + o.imag*o.imag;
-        if (denom == 0.0L) throw std::runtime_error("Division by zero");
+        Big denom = o.real*o.real + o.imag*o.imag;
+        if (denom == 0) throw std::runtime_error("Division by zero");
         return Complex((real*o.real + imag*o.imag)/denom, (imag*o.real - real*o.imag)/denom);
     }
 
     Complex conjugate() const { return Complex(real, -imag); }
-    long double magnitude() const { return std::sqrtl(real*real + imag*imag); }
+    Big magnitude() const { return boost::multiprecision::sqrt(real*real + imag*imag); }
     bool isVariablePlaceholder() const { return isVal; }
 
-    friend std::ostream& operator<<(std::ostream& os, const Complex& c) {
-        const long double eps = 1e-15L;
-        auto z = [&](long double x){ return std::fabsl(x) < eps ? 0.0L : x; };
-        long double rr = z(c.real), ii = z(c.imag);
-        if (ii == 0.0L) {
-            os << rr;
-        } else if (rr == 0.0L) {
-            if (ii == 1.0L) os << "i";
-            else if (ii == -1.0L) os << "-i";
-            else os << ii << "i";
-        } else {
-            os << rr << (ii > 0 ? " + " : " - ");
-            if (std::fabsl(ii) == 1.0L) os << "i";
-            else os << std::fabsl(ii) << "i";
-        }
-        return os;
-    }
+    const Big& realPart() const { return real; }
+    const Big& imagPart() const { return imag; }
 
 private:
-    long double real;
-    long double imag;
+    Big real;
+    Big imag;
     bool isVal = false;
 };
 
-// ================= Op / Token =================
-enum class Op { Assign, Add, Sub, Mul, Div, LParen, RParen, FnCon, FnMod };
+// 将 Big 按配置转字符串：整数在 fixed 模式下用普通十进制，不带小数/科学记数
+static std::string to_string_big(const Big& x, const FormatConfig& cfg) {
+    using std::ios_base;
+    using boost::multiprecision::floor;
 
+    auto is_int = [&](const Big& v){ return floor(v) == v; };
+
+    if (cfg.sci) {
+        // 科学计数法，保留 cfg.precision 位（小数点后位数）
+        return x.str(cfg.precision, ios_base::scientific);
+    } else {
+        if (is_int(x)) {
+            // 整数：用最短十进制，不受流状态影响
+            return x.str(0, ios_base::fmtflags(0));
+        } else {
+            // 非整数：fixed 小数点后 cfg.precision 位
+            return x.str(cfg.precision, ios_base::fixed);
+        }
+    }
+}
+
+static std::string formatComplex(const Complex& c, const FormatConfig& cfg) {
+    using boost::multiprecision::abs;
+    const Big& rr = c.realPart();
+    const Big& ii = c.imagPart();
+
+    if (ii == 0) {
+        return to_string_big(rr, cfg);
+    }
+    if (rr == 0) {
+        if (ii == 1)  return "i";
+        if (ii == -1) return "-i";
+        return to_string_big(ii, cfg) + "i";
+    }
+    std::string s = to_string_big(rr, cfg);
+    s += (ii > 0 ? " + " : " - ");
+    Big a = abs(ii);
+    if (a == 1) s += "i";
+    else        s += to_string_big(a, cfg) + "i";
+    return s;
+}
+
+// ============ 运算符/Token ============
+enum class Op { Assign, Add, Sub, Mul, Div, LParen, RParen, FnCon, FnMod };
 struct BindingPower { int left; int right; };
 constexpr BindingPower binding(Op op) {
     switch (op) {
-        case Op::Assign:  return {4, 5};   // 右结合：左<右
+        case Op::Assign:  return {4, 5};   // 右结合
         case Op::Add:     return {10, 9};
         case Op::Sub:     return {10, 9};
         case Op::Mul:     return {15, 14};
@@ -74,8 +111,7 @@ inline bool shouldPop(Op top, Op incoming) {
     if (top == Op::LParen) return false;
     if (incoming == Op::RParen) return true;
     const auto tb = binding(top), ib = binding(incoming);
-    // 赋值为右结合：严格大于；其他使用 >=
-    if (incoming == Op::Assign) return tb.left > ib.right;
+    if (incoming == Op::Assign) return tb.left > ib.right; // 右结合：严格大于
     return tb.left >= ib.right;
 }
 
@@ -83,11 +119,10 @@ enum class Kind { Number, Ident, OpTok };
 struct Token {
     Kind kind{};
     Op op{};                 // kind == OpTok
-    std::string lex;         // kind == Number/Ident：原字面量
-    size_t pos = 0;          // 源位置（可用于报错）
+    std::string lex;         // kind == Number/Ident：原字面量（数字字符串或变量名）
+    size_t pos = 0;          // 源位置（用于错误提示）
 };
 
-// 工具：一字符运算符到 Op
 inline Op toOpChar(char c) {
     switch (c) {
         case '+': return Op::Add;
@@ -101,13 +136,13 @@ inline Op toOpChar(char c) {
     }
 }
 
-// 兜底数字正则（仅在 Scanner 验证字面量时用一次）
+// 数字正则：支持实数、科学计数法、带 i 的虚数字面量、以及单独的 i
 static const std::regex kNumRe(
     R"(^(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?i?|i)$)"
 );
 
-// ================= Scanner =================
-std::vector<Token> Scanner(const std::string& s) {
+// ============ Scanner：把字符串转 Tokens ============
+static std::vector<Token> Scanner(const std::string& s) {
     std::vector<Token> toks;
     std::stack<char> par;
     std::string cur;
@@ -125,7 +160,7 @@ std::vector<Token> Scanner(const std::string& s) {
                 if (!(std::isalnum((unsigned char)ch) || ch == '_'))
                     throw std::runtime_error("Invalid ident: " + cur);
             }
-            if (cur == "i") { // 纯虚单位
+            if (cur == "i") {
                 toks.push_back(Token{Kind::Number, Op{}, cur, curPos});
             } else if (cur == "con") {
                 toks.push_back(Token{Kind::OpTok, Op::FnCon, "", curPos});
@@ -142,7 +177,6 @@ std::vector<Token> Scanner(const std::string& s) {
         char c = s[i];
         if (std::isspace((unsigned char)c)) continue;
 
-        // 运算符与括号
         if (c=='+' || c=='-' || c=='*' || c=='/' || c=='=' || c=='(' || c==')') {
             flushCurrent();
             if (c == '(') par.push('(');
@@ -154,7 +188,6 @@ std::vector<Token> Scanner(const std::string& s) {
             continue;
         }
 
-        // 累积为字面量/标识符
         if (cur.empty()) curPos = i;
         cur.push_back(c);
     }
@@ -164,11 +197,11 @@ std::vector<Token> Scanner(const std::string& s) {
     return toks;
 }
 
-// ================= 执行一个运算符 =================
-Complex popOperator(std::stack<Complex>& values,
-                    std::stack<Op>& ops,
-                    std::stack<std::string>& assignTargets,
-                    std::unordered_map<std::string, Complex>& variables) {
+// ============ 执行一个运算符 ============
+static Complex popOperator(std::stack<Complex>& values,
+                           std::stack<Op>& ops,
+                           std::stack<std::string>& assignTargets,
+                           std::unordered_map<std::string, Complex>& variables) {
     Op op = ops.top(); ops.pop();
     switch (op) {
         case Op::Add: {
@@ -210,33 +243,43 @@ Complex popOperator(std::stack<Complex>& values,
         }
         case Op::FnMod: {
             Complex a = values.top(); values.pop();
-            return Complex(a.magnitude(), 0.0L);
+            return Complex(a.magnitude(), Big(0));
         }
         default:
             throw std::runtime_error("Invalid operator");
     }
 }
 
-// ================= Calculator =================
-bool Calculator(const std::vector<Token>& tokens,
-                std::unordered_map<std::string, Complex>& variables,
-                Complex& result) {
+// ============ Calculator ============
+static Big parseBig(const std::string& s) {
+    try {
+        return s.empty() ? Big(0) : Big(s);
+    } catch (...) {
+        throw std::runtime_error("Invalid number: " + s);
+    }
+}
+
+static bool Calculator(const std::vector<Token>& tokens,
+                       std::unordered_map<std::string, Complex>& variables,
+                       Complex& result) {
     std::stack<Complex> values;
     std::stack<Op> ops;
     std::stack<std::string> assignTargets;
 
-    bool expectOperand = true;// 期待操作数
-    bool hadAssignment = false;// 是否有赋值操作
+    bool expectOperand = true;
+    bool hadAssignment = false;
 
-    auto pushNumberFromLex = [&](const std::string& lex) {// stold 解析数字字面量
-        if (lex == "i") { values.push(Complex(0.0L, 1.0L)); return; }
+    auto pushNumberFromLex = [&](const std::string& lex) {
+        if (lex == "i") { values.push(Complex(Big(0), Big(1))); return; }
         if (!lex.empty() && lex.back() == 'i') {
             std::string t = lex.substr(0, lex.size()-1);
-            long double v = t.empty() ? 1.0L : std::stold(t);
-            values.push(Complex(0.0L, v));
+            if (t.empty() || t == "+" || t == "-") {
+                values.push(Complex(Big(0), (t == "-") ? Big(-1) : Big(1)));
+            } else {
+                values.push(Complex(Big(0), parseBig(t)));
+            }
         } else {
-            long double v = std::stold(lex);
-            values.push(Complex(v, 0.0L));
+            values.push(Complex(parseBig(lex), Big(0)));
         }
     };
 
@@ -255,7 +298,7 @@ bool Calculator(const std::vector<Token>& tokens,
                                  && tokens[i+1].op == Op::Assign);
             if (nextIsAssign) {
                 assignTargets.push(tk.lex);
-                values.push(Complex(0.0L, 0.0L, true)); // 占位符
+                values.push(Complex(Big(0), Big(0), true)); // 占位符
                 hadAssignment = true;
             } else {
                 auto it = variables.find(tk.lex);
@@ -267,7 +310,6 @@ bool Calculator(const std::vector<Token>& tokens,
             continue;
         }
 
-        // 运算符/括号/函数
         if (tk.kind == Kind::OpTok) {
             Op op = tk.op;
 
@@ -302,7 +344,6 @@ bool Calculator(const std::vector<Token>& tokens,
                 continue;
             }
 
-            // 二元 + - * / =
             if (op == Op::Add || op == Op::Sub || op == Op::Mul || op == Op::Div || op == Op::Assign) {
                 if (expectOperand) {
                     if (op == Op::Add) {
@@ -310,7 +351,7 @@ bool Calculator(const std::vector<Token>& tokens,
                         continue;
                     } else if (op == Op::Sub) {
                         // 一元负号：0 - x
-                        values.push(Complex(0.0L, 0.0L));
+                        values.push(Complex(Big(0), Big(0)));
                     } else {
                         throw std::runtime_error("Missing operand before operator");
                     }
@@ -341,20 +382,71 @@ bool Calculator(const std::vector<Token>& tokens,
     return !hadAssignment;
 }
 
-// ================= main (REPL) =================
+// ============ 工具 ============
+static std::string trim(const std::string& s) {
+    const std::string ws = " \t\n\r";
+    size_t b = s.find_first_not_of(ws);
+    if (b == std::string::npos) return "";
+    size_t e = s.find_last_not_of(ws);
+    return s.substr(b, e - b + 1);
+}
+
+// ============ main (REPL) ============
 int main() {
     std::unordered_map<std::string, Complex> variables;
     std::string line;
+
     std::cout << ">>> ";
     while (std::getline(std::cin, line)) {
         try {
+            std::string cmd = trim(line);
+            if (cmd.empty()) {
+                std::cout << ">>> ";
+                continue;
+            }
+            // 帮助命令
+            if (cmd == "help") {
+                std::cout
+                    << "命令:\n"
+                    << "  help              显示帮助\n"
+                    << "  format sci        使用科学计数法输出\n"
+                    << "  format fixed      使用普通十进制输出（整数不带小数）\n"
+                    << "  precision N       设置小数位数（sci 为小数点后 N 位；fixed 为小数点后 N 位）\n"
+                    << "  quit / exit       退出\n"
+                    << "表达式:\n"
+                    << "  支持 + - * / ，赋值 = ，函数 con(z) 共轭、mod(z) 模长\n"
+                    << "  支持复数字面量如 3.14、.5、1e10、2.5i、-i、i\n";
+                std::cout << ">>> ";
+                continue;
+            }
+            if (cmd == "quit" || cmd == "exit") break;
+
+            if (cmd == "format sci") {
+                gFmt.sci = true;
+                std::cout << "已切换到科学计数法输出\n>>> ";
+                continue;
+            }
+            if (cmd == "format fixed") {
+                gFmt.sci = false;
+                std::cout << "已切换到普通十进制输出\n>>> ";
+                continue;
+            }
+            if (cmd.rfind("precision ", 0) == 0) {
+                std::string nstr = trim(cmd.substr(10));
+                int p = std::max(0, std::stoi(nstr));
+                gFmt.precision = p;
+                std::cout << "已设置小数位数为 " << p << "\n>>> ";
+                continue;
+            }
+
+            // 表达式求值
             auto tokens = Scanner(line);
             Complex result;
             if (Calculator(tokens, variables, result)) {
-                std::cout << result << std::endl;
+                std::cout << formatComplex(result, gFmt) << "\n";
             }
         } catch (const std::exception& e) {
-            std::cerr << "Error: " << e.what() << std::endl;
+            std::cerr << "Error: " << e.what() << "\n";
         }
         std::cout << ">>> ";
     }
