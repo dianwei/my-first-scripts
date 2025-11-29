@@ -1,337 +1,354 @@
 #include <iostream>
 #include <string>
 #include <unordered_map>
-#include <algorithm>
-#include <sstream>
-#include <cmath>
 #include <stack>
 #include <vector>
+#include <stdexcept>
+#include <cctype>
+#include <cmath>
 #include <regex>
 #include <iomanip>
 
+// ================= Complex =================
 class Complex {
-    public:
-        Complex(long double r = 0.0L, long double i = 0.0L, bool placeholder = false)
-            : real(r), imag(i), isVal(placeholder) {}
+public:
+    Complex(long double r = 0.0L, long double i = 0.0L, bool placeholder = false)
+        : real(r), imag(i), isVal(placeholder) {}
 
-        Complex operator+(const Complex& other) const {
-            return Complex(real + other.real, imag + other.imag);
-        }
-        Complex operator-(const Complex& other) const {
-            return Complex(real - other.real, imag - other.imag);
-        }
-        Complex operator*(const Complex& other) const {
-            return Complex(real * other.real - imag * other.imag,
-                           real * other.imag + imag * other.real);
-        }
-        Complex operator/(const Complex& other) const {
-            long double denom = other.real * other.real + other.imag * other.imag;
-            if (denom == 0.0L) throw std::runtime_error("Division by zero");
-            return Complex((real * other.real + imag * other.imag) / denom,
-                           (imag * other.real - real * other.imag) / denom);
-        }
+    Complex operator+(const Complex& o) const { return Complex(real + o.real, imag + o.imag); }
+    Complex operator-(const Complex& o) const { return Complex(real - o.real, imag - o.imag); }
+    Complex operator*(const Complex& o) const { return Complex(real*o.real - imag*o.imag, real*o.imag + imag*o.real); }
+    Complex operator/(const Complex& o) const {
+        long double denom = o.real*o.real + o.imag*o.imag;
+        if (denom == 0.0L) throw std::runtime_error("Division by zero");
+        return Complex((real*o.real + imag*o.imag)/denom, (imag*o.real - real*o.imag)/denom);
+    }
 
-        Complex conjugate() const { return Complex(real, -imag); }
-        long double magnitude() const { return std::sqrtl(real * real + imag * imag); }
+    Complex conjugate() const { return Complex(real, -imag); }
+    long double magnitude() const { return std::sqrtl(real*real + imag*imag); }
+    bool isVariablePlaceholder() const { return isVal; }
 
-        bool isVariablePlaceholder() const { return isVal; }
-
-        friend std::ostream& operator<<(std::ostream& os, const Complex& c) {
-            if (c.imag == 0.0L) {
-                os << c.real;
-            } else if (c.real == 0.0L) {
-                if(c.imag == 1.0L) os << "i";
-                else if(c.imag == -1.0L) os << "-i";
-                else
-                os << c.imag << "i";
-            } else {
-                os << c.real << (c.imag > 0 ? " + " : " - ");
-                if(c.imag == 1.0L || c.imag == -1.0L) 
-                    os << "i";
-                else
-                    os << std::fabsl(c.imag) << "i";
-            }
-            return os;
+    friend std::ostream& operator<<(std::ostream& os, const Complex& c) {
+        const long double eps = 1e-15L;
+        auto z = [&](long double x){ return std::fabsl(x) < eps ? 0.0L : x; };
+        long double rr = z(c.real), ii = z(c.imag);
+        if (ii == 0.0L) {
+            os << rr;
+        } else if (rr == 0.0L) {
+            if (ii == 1.0L) os << "i";
+            else if (ii == -1.0L) os << "-i";
+            else os << ii << "i";
+        } else {
+            os << rr << (ii > 0 ? " + " : " - ");
+            if (std::fabsl(ii) == 1.0L) os << "i";
+            else os << std::fabsl(ii) << "i";
         }
+        return os;
+    }
 
-    private:
-        long double real;
-        long double imag;
-        bool isVal = false;
+private:
+    long double real;
+    long double imag;
+    bool isVal = false;
 };
 
-enum class Op {
-    Assign, Add, Sub, Mul, Div,
-    LParen, RParen,
-    ConCall, ModCall  // 表示 con( / mod( 的前缀符号
-};
+// ================= Op / Token =================
+enum class Op { Assign, Add, Sub, Mul, Div, LParen, RParen, FnCon, FnMod };
 
-struct BindingPower {
-    int left;
-    int right;
-};
-
-// 由左至右：左 binding power > 右 binding power
+struct BindingPower { int left; int right; };
 constexpr BindingPower binding(Op op) {
     switch (op) {
-        case Op::Assign: return {4, 5};
-        case Op::Add:
-        case Op::Sub:    return {10, 9};
-        case Op::Mul:
-        case Op::Div:    return {15, 14};
-        case Op::LParen: return {100, -1};
-        case Op::ConCall:
-        case Op::ModCall:return {20, 19};
-        default:         return {-1, -1};
+        case Op::Assign:  return {4, 5};   // 右结合：左<右
+        case Op::Add:     return {10, 9};
+        case Op::Sub:     return {10, 9};
+        case Op::Mul:     return {15, 14};
+        case Op::Div:     return {15, 14};
+        case Op::LParen:  return {100, -1};
+        case Op::RParen:  return {-1, -1};
+        case Op::FnCon:   return {20, 19};
+        case Op::FnMod:   return {20, 19};
+        default:          return {-1, -1};
+    }
+}
+inline bool shouldPop(Op top, Op incoming) {
+    if (top == Op::LParen) return false;
+    if (incoming == Op::RParen) return true;
+    const auto tb = binding(top), ib = binding(incoming);
+    // 赋值为右结合：严格大于；其他使用 >=
+    if (incoming == Op::Assign) return tb.left > ib.right;
+    return tb.left >= ib.right;
+}
+
+enum class Kind { Number, Ident, OpTok };
+struct Token {
+    Kind kind{};
+    Op op{};                 // kind == OpTok
+    std::string lex;         // kind == Number/Ident：原字面量
+    size_t pos = 0;          // 源位置（可用于报错）
+};
+
+// 工具：一字符运算符到 Op
+inline Op toOpChar(char c) {
+    switch (c) {
+        case '+': return Op::Add;
+        case '-': return Op::Sub;
+        case '*': return Op::Mul;
+        case '/': return Op::Div;
+        case '=': return Op::Assign;
+        case '(': return Op::LParen;
+        case ')': return Op::RParen;
+        default: throw std::runtime_error(std::string("unknown op char: ") + c);
     }
 }
 
-// 把 token 映射到 Op
-Op toOp(const std::string& tok) {
-    if (tok == "=")   return Op::Assign;
-    if (tok == "+")   return Op::Add;
-    if (tok == "-")   return Op::Sub;
-    if (tok == "*")   return Op::Mul;
-    if (tok == "/")   return Op::Div;
-    if (tok == "(")   return Op::LParen;
-    if (tok == ")")   return Op::RParen;
-    if (tok == "con(")return Op::ConCall;
-    if (tok == "mod(")return Op::ModCall;
-    throw std::runtime_error("unknown op: " + tok);
+// 兜底数字正则（仅在 Scanner 验证字面量时用一次）
+static const std::regex kNumRe(
+    R"(^(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?i?|i)$)"
+);
+
+// ================= Scanner =================
+std::vector<Token> Scanner(const std::string& s) {
+    std::vector<Token> toks;
+    std::stack<char> par;
+    std::string cur;
+    size_t curPos = 0;
+
+    auto flushCurrent = [&]() {
+        if (cur.empty()) return;
+        if (std::regex_match(cur, kNumRe)) {
+            toks.push_back(Token{Kind::Number, Op{}, cur, curPos});
+        } else {
+            // 标识符/函数名
+            if (!(std::isalpha((unsigned char)cur[0]) || cur[0] == '_'))
+                throw std::runtime_error("Invalid token: " + cur);
+            for (char ch : cur) {
+                if (!(std::isalnum((unsigned char)ch) || ch == '_'))
+                    throw std::runtime_error("Invalid ident: " + cur);
+            }
+            if (cur == "i") { // 纯虚单位
+                toks.push_back(Token{Kind::Number, Op{}, cur, curPos});
+            } else if (cur == "con") {
+                toks.push_back(Token{Kind::OpTok, Op::FnCon, "", curPos});
+            } else if (cur == "mod") {
+                toks.push_back(Token{Kind::OpTok, Op::FnMod, "", curPos});
+            } else {
+                toks.push_back(Token{Kind::Ident, Op{}, cur, curPos});
+            }
+        }
+        cur.clear();
+    };
+
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (std::isspace((unsigned char)c)) continue;
+
+        // 运算符与括号
+        if (c=='+' || c=='-' || c=='*' || c=='/' || c=='=' || c=='(' || c==')') {
+            flushCurrent();
+            if (c == '(') par.push('(');
+            else if (c == ')') {
+                if (par.empty()) throw std::runtime_error("Unmatched ')' at pos " + std::to_string(i));
+                par.pop();
+            }
+            toks.push_back(Token{Kind::OpTok, toOpChar(c), "", i});
+            continue;
+        }
+
+        // 累积为字面量/标识符
+        if (cur.empty()) curPos = i;
+        cur.push_back(c);
+    }
+    flushCurrent();
+
+    if (!par.empty()) throw std::runtime_error("Mismatched parentheses");
+    return toks;
 }
 
-// 根据“左权重大于右权重”的规则决定是否先处理栈顶运算符
-inline bool shouldPop(Op top, Op incoming) {
-    if (top == Op::LParen)   return false;
-    if (incoming == Op::RParen) return true;
-    const auto topBind = binding(top);
-    const auto inBind  = binding(incoming);
-    return topBind.left >= inBind.right;
-}
-
+// ================= 执行一个运算符 =================
 Complex popOperator(std::stack<Complex>& values,
                     std::stack<Op>& ops,
                     std::stack<std::string>& assignTargets,
                     std::unordered_map<std::string, Complex>& variables) {
-    Op op = ops.top();
-    ops.pop();
-    if (op == Op::Add || op == Op::Sub || op == Op::Mul || op == Op::Div) {
-        Complex right = values.top(); values.pop();
-        Complex left = values.top(); values.pop();
-        
-        Complex result;
-        switch (op) {
-            case Op::Add: result = left + right; break;
-            case Op::Sub: result = left - right; break;
-            case Op::Mul: result = left * right; break;
-            case Op::Div: result = left / right; break;
-            default: throw std::runtime_error("Invalid binary operator");
+    Op op = ops.top(); ops.pop();
+    switch (op) {
+        case Op::Add: {
+            Complex r = values.top(); values.pop();
+            Complex l = values.top(); values.pop();
+            return l + r;
         }
-        return result;
-    } else if (op == Op::Assign) {
-        if (values.empty()) {
-            throw std::runtime_error("Missing right value for assignment");
+        case Op::Sub: {
+            Complex r = values.top(); values.pop();
+            Complex l = values.top(); values.pop();
+            return l - r;
         }
-        Complex value = values.top(); values.pop();
-        if (values.empty()) {
-            throw std::runtime_error("Missing assignment target");
+        case Op::Mul: {
+            Complex r = values.top(); values.pop();
+            Complex l = values.top(); values.pop();
+            return l * r;
         }
-        Complex placeholder = values.top(); values.pop();
-        if (!placeholder.isVariablePlaceholder()) {
-            throw std::runtime_error("Left operand of assignment must be a variable");
+        case Op::Div: {
+            Complex r = values.top(); values.pop();
+            Complex l = values.top(); values.pop();
+            return l / r;
         }
-        if (assignTargets.empty()) {
-            throw std::runtime_error("Internal error: no variable recorded for assignment");
+        case Op::Assign: {
+            if (values.empty()) throw std::runtime_error("Missing right value for assignment");
+            Complex value = values.top(); values.pop();
+            if (values.empty()) throw std::runtime_error("Missing assignment target");
+            Complex placeholder = values.top(); values.pop();
+            if (!placeholder.isVariablePlaceholder())
+                throw std::runtime_error("Left operand of assignment must be a variable");
+            if (assignTargets.empty())
+                throw std::runtime_error("Internal error: no variable recorded for assignment");
+            std::string var = assignTargets.top(); assignTargets.pop();
+            variables[var] = value;
+            return value;
         }
-        const std::string varName = assignTargets.top();// 增加变量栈保存变量名，占位符保存在值栈中
-        assignTargets.pop();
-        variables[varName] = value;
-        return value;
+        case Op::FnCon: {
+            Complex a = values.top(); values.pop();
+            return a.conjugate();
+        }
+        case Op::FnMod: {
+            Complex a = values.top(); values.pop();
+            return Complex(a.magnitude(), 0.0L);
+        }
+        default:
+            throw std::runtime_error("Invalid operator");
     }
-    else if (op == Op::ConCall) {
-        Complex arg = values.top(); values.pop();
-        return arg.conjugate();
-    }
-    else if (op == Op::ModCall) {
-        Complex arg = values.top(); values.pop();
-        return Complex(arg.magnitude(), 0.0L);
-    }
-    throw std::runtime_error("Invalid operator");
 }
 
-bool isValidNumber(const std::string& s) {
-    static const std::regex re(
-        R"(^(?:[+-]?(?:\d+(?:.\d*)?|.\d+)(?:[eE][+-]?\d+)?i?|i)$)"// 匹配实数和虚数形式（包括单独的 i）
-    );
-    return std::regex_match(s, re);
-}
-
-bool isvalidVariable(const std::string& s) {
-    if(s=="i" || s=="con" || s=="mod") return false;// 保留字
-    if(s.empty() || (!isalpha(s[0]) && s[0]!='_')) return false;
-    for(char c : s) {
-        if(!isalnum(c) && c!='_') return false;
-    }
-    return true;
-}
-
-bool Scanner(const std::string& s, std::vector<std::string>& tokens) {
-    std::string current="";
-    std::stack<char> opStack;// 用于处理括号匹配
-    for(size_t i=0; i<s.size(); ++i) {
-        char c = s[i];
-        if(c==' ') continue;
-        if(c=='+' || c=='-' || c=='*' || c=='/' || c=='(' || c==')' || c=='=') {
-            // 括号匹配检查
-            if(c=='(') opStack.push(c);
-            else if(c==')') {
-                if(opStack.empty() || opStack.top()!='(') {
-                    throw std::runtime_error("Mismatched parentheses");
-                } else {
-                    opStack.pop();
-                }
-            }
-
-            if(!current.empty()) {
-                tokens.push_back(current);
-                current="";
-            }
-            if(i == s.size()-1 && c=='-') {
-                throw std::runtime_error("Invalid token: -");// 处理最后一个字符是 '-' 的情况
-            }else tokens.push_back(std::string(1,c));
-        } else {
-            current+=c;
-        }
-    }
-    if(!current.empty()) {
-        if(current != "-")
-        tokens.push_back(current);
-        else throw std::runtime_error("Invalid token: " + current);
-    }
-
-    return true;
-}
-
-bool Calculator(const std::vector<std::string>& tokens, std::unordered_map<std::string, Complex>& variables, Complex& result) {
+// ================= Calculator =================
+bool Calculator(const std::vector<Token>& tokens,
+                std::unordered_map<std::string, Complex>& variables,
+                Complex& result) {
     std::stack<Complex> values;
     std::stack<Op> ops;
     std::stack<std::string> assignTargets;
-    bool expectOperand = true;
-    bool hadAssignment = false;
-    for(size_t i=0; i<tokens.size(); ++i) {
-        const std::string& token = tokens[i];
-        if(isValidNumber(token)) {
-            long double val = 0.0L;
-            if(token.back()=='i') {
-                std::string imagPart = token.substr(0, token.size()-1);
-                val = imagPart.empty() ? 1.0L : std::stold(imagPart);
-                values.push(Complex(0.0L, val));
-            }
-            else {
-                val = std::stold(token);
-                values.push(Complex(val, 0.0L));
-            }
+
+    bool expectOperand = true;// 期待操作数
+    bool hadAssignment = false;// 是否有赋值操作
+
+    auto pushNumberFromLex = [&](const std::string& lex) {// stold 解析数字字面量
+        if (lex == "i") { values.push(Complex(0.0L, 1.0L)); return; }
+        if (!lex.empty() && lex.back() == 'i') {
+            std::string t = lex.substr(0, lex.size()-1);
+            long double v = t.empty() ? 1.0L : std::stold(t);
+            values.push(Complex(0.0L, v));
+        } else {
+            long double v = std::stold(lex);
+            values.push(Complex(v, 0.0L));
+        }
+    };
+
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        const Token& tk = tokens[i];
+
+        if (tk.kind == Kind::Number) {
+            pushNumberFromLex(tk.lex);
             expectOperand = false;
-        } else if(isvalidVariable(token)) {
-            bool nextIsAssign = (i + 1 < tokens.size() && tokens[i+1] == "=");
-            if(nextIsAssign) {
-                assignTargets.push(token);
-                values.push(Complex(0.0L, 0.0L, true));
+            continue;
+        }
+
+        if (tk.kind == Kind::Ident) {
+            bool nextIsAssign = (i + 1 < tokens.size()
+                                 && tokens[i+1].kind == Kind::OpTok
+                                 && tokens[i+1].op == Op::Assign);
+            if (nextIsAssign) {
+                assignTargets.push(tk.lex);
+                values.push(Complex(0.0L, 0.0L, true)); // 占位符
                 hadAssignment = true;
             } else {
-                auto it = variables.find(token);
-                if(it == variables.end()) {
-                    throw std::runtime_error("Undefined variable: " + token);
-                }
+                auto it = variables.find(tk.lex);
+                if (it == variables.end())
+                    throw std::runtime_error("Undefined variable: " + tk.lex);
                 values.push(it->second);
             }
             expectOperand = false;
+            continue;
         }
-        else if(token == "con" || token == "mod") {
-            if(!expectOperand) {
-                throw std::runtime_error("Missing operator before function call: " + token);
+
+        // 运算符/括号/函数
+        if (tk.kind == Kind::OpTok) {
+            Op op = tk.op;
+
+            if (op == Op::FnCon || op == Op::FnMod) {
+                if (!expectOperand) throw std::runtime_error("Missing operator before function call");
+                ops.push(op);
+                expectOperand = true;
+                continue;
             }
-            if(i + 1 >= tokens.size() || tokens[i+1] != "(") {
-                throw std::runtime_error("Function call must be followed by '('");
+
+            if (op == Op::LParen) {
+                if (!expectOperand) throw std::runtime_error("Missing operator before '('");
+                ops.push(op);
+                expectOperand = true;
+                continue;
             }
-            const Op opToken = (token == "con") ? Op::ConCall : Op::ModCall;
-            while(!ops.empty() && shouldPop(ops.top(), opToken)) {
-                Complex val = popOperator(values, ops, assignTargets, variables);
-                values.push(val);
+
+            if (op == Op::RParen) {
+                if (expectOperand) throw std::runtime_error("Missing operand before ')'");
+                while (!ops.empty() && ops.top() != Op::LParen) {
+                    Complex v = popOperator(values, ops, assignTargets, variables);
+                    values.push(v);
+                }
+                if (ops.empty() || ops.top() != Op::LParen)
+                    throw std::runtime_error("Mismatched parentheses");
+                ops.pop(); // 弹出 '('
+                if (!ops.empty() && (ops.top() == Op::FnCon || ops.top() == Op::FnMod)) {
+                    Complex v = popOperator(values, ops, assignTargets, variables);
+                    values.push(v);
+                }
+                expectOperand = false;
+                continue;
             }
-            ops.push(opToken);
-            expectOperand = true;
+
+            // 二元 + - * / =
+            if (op == Op::Add || op == Op::Sub || op == Op::Mul || op == Op::Div || op == Op::Assign) {
+                if (expectOperand) {
+                    if (op == Op::Add) {
+                        // 一元正号：忽略
+                        continue;
+                    } else if (op == Op::Sub) {
+                        // 一元负号：0 - x
+                        values.push(Complex(0.0L, 0.0L));
+                    } else {
+                        throw std::runtime_error("Missing operand before operator");
+                    }
+                }
+                while (!ops.empty() && shouldPop(ops.top(), op)) {
+                    Complex v = popOperator(values, ops, assignTargets, variables);
+                    values.push(v);
+                }
+                ops.push(op);
+                expectOperand = true;
+                continue;
+            }
+
+            throw std::runtime_error("Unexpected operator");
         }
-        else if(token == "+" || token == "-" || token == "*" || token == "/" || token == "=") {
-            if(expectOperand) {
-                if(token == "-") {
-                    values.push(Complex(0.0L, 0.0L));
-                } else if(token == "+") {
-                    values.push(Complex(0.0L, 0.0L));
-                } else {
-                    throw std::runtime_error("Missing operand before operator: " + token);
-                } 
-            }
-            
-            const Op opToken = toOp(token);
-            while(!ops.empty() && shouldPop(ops.top(), opToken)) {
-                Complex val = popOperator(values, ops, assignTargets, variables);
-                values.push(val);
-            }
-            ops.push(opToken);
-            expectOperand = true;
-        } else if(token == "(") {
-            if(!expectOperand) {
-                throw std::runtime_error("Missing operator before '('");
-            }
-            ops.push(Op::LParen);
-            expectOperand = true;
-        } else if(token == ")") {
-            if(expectOperand) {
-                throw std::runtime_error("Missing operand before ')'");
-            }
-            while(!ops.empty() && ops.top() != Op::LParen) {
-                Complex val = popOperator(values, ops, assignTargets, variables);
-                values.push(val);
-            }
-            if(!ops.empty() && ops.top() == Op::LParen) {
-                ops.pop(); // 弹出左括号
-            } else {
-                throw std::runtime_error("Mismatched parentheses");
-            }
-            if(!ops.empty() && (ops.top() == Op::ConCall || ops.top() == Op::ModCall)) {
-                Complex val = popOperator(values, ops, assignTargets, variables);
-                values.push(val);
-            }
-            expectOperand = false;
-        }
-        else throw std::runtime_error("Invalid token: " + token);
+
+        throw std::runtime_error("Unknown token kind");
     }
-    if(expectOperand) {
-        throw std::runtime_error("Expression ends with an operator");
+
+    if (expectOperand) throw std::runtime_error("Expression ends with an operator");
+
+    while (!ops.empty()) {
+        Complex v = popOperator(values, ops, assignTargets, variables);
+        values.push(v);
     }
-    while(!ops.empty()) {
-        Complex val = popOperator(values, ops, assignTargets, variables);
-        values.push(val);
-    }
-    if(values.size() != 1) {
-        throw std::runtime_error("Invalid expression");
-    }
+    if (values.size() != 1) throw std::runtime_error("Invalid expression");
     result = values.top();
-    if(hadAssignment) {
-        return false; // 表示这是一个赋值表达式，没有输出结果
-    }
-    return true;
+    return !hadAssignment;
 }
 
-int main(){
+// ================= main (REPL) =================
+int main() {
     std::unordered_map<std::string, Complex> variables;
     std::string line;
     std::cout << ">>> ";
     while (std::getline(std::cin, line)) {
         try {
-            std::vector<std::string> tokens;
-            Scanner(line, tokens);
+            auto tokens = Scanner(line);
             Complex result;
             if (Calculator(tokens, variables, result)) {
                 std::cout << result << std::endl;
